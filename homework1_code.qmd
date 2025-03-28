@@ -1,0 +1,324 @@
+---
+title: "Homework1: classification models on CHD data set"
+date: "aprile 2025"
+author: "Camilla Bonomo matr. 255138"
+format:
+    pdf:
+        latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE,
+                      message=FALSE,
+                      tidy.opts=list(width.cutoff = 50),
+                      tidy = TRUE)
+```
+
+This paper analyses data on Coronary Heart Disease and aims to evaluate two classification models for predicting CHD status from a set of demographic and clinical predictors. The compared models are Logistic Regression (LR) and K-Nearest Neighbors (k-NN). The main objective of this paper is to understand the influence of predictors on CHD and compare performance metrics (accuracy, sensitivity, specificity, AUC) across Linear regression and k-NN.
+(link to repository: https://github.com/camillabonomo02/Homework_1.git )
+
+## Data exploration and cleaning
+
+```{r, echo=FALSE}
+library(tidyverse)
+library(patchwork)
+library(dplyr)
+library(ggplot2)
+library(caret)
+library(pROC)
+library(kableExtra)
+library(knitr)
+library(tidymodels)
+```
+
+For this analysis it has been used a data set - defined here as *df_chd* - containing individual-level observations on CHD status, demographics (e.g., age, sex, education), and clinical parameters (e.g., heart rate, cholesterol).
+
+```{r,echo=FALSE}
+df_chd<- read.csv("chd.csv")
+```
+
+In particular, the *CHD* variable is the **categorical response** variable that returns a binary outcome (“No” or “Yes”). The predictors are the other 12 variables included in the data set, which are a mix of continuous and categorical variables. Having said that, it is important to factorize all the categorical variables so that they can be correctly recognized and processed by the classification algorithms, enabling accurate parameter estimation and interpretation.
+
+```{r,echo=FALSE}
+df_chd$sex<- factor(df_chd$sex)
+df_chd$education<- factor(df_chd$education)
+df_chd$smoker<- factor(df_chd$smoker)
+df_chd$stroke<- factor(df_chd$stroke)
+df_chd$HTN<- factor(df_chd$HTN)
+df_chd$diabetes<- factor(df_chd$diabetes)
+df_chd$CHD<- factor(df_chd$CHD)
+```
+
+Then, a quick research for NAs is done returning the following:
+
+```{r,echo=FALSE}
+sapply(df_chd, function(x) sum(is.na(x)))
+```
+
+For the continuous variables it has been decided to impute them with the *mean*. The exception is made for the variable **cpd** whose NAs are imputed with the *median* as its distribution may be skewed toward zero. Meanwhile, the NAs values of the categorical variable education are imputed with the *mode*.
+
+```{r,echo=FALSE}
+df_chd <- df_chd %>%
+  mutate(
+    across(
+      .cols = c(chol, DBP, BMI, HR),
+      .fns = ~ ifelse(is.na(.), median(., na.rm = TRUE), .)
+    )
+  )
+```
+
+```{r,echo=FALSE}
+df_chd$cpd[is.na(df_chd$cpd)] <- median(df_chd$cpd, na.rm = TRUE)
+```
+
+```{r,echo=FALSE}
+mode_edu <- names(sort(table(df_chd$education), decreasing = TRUE))[1]
+df_chd$education[is.na(df_chd$education)] <- mode_edu
+```
+
+Another main point for the data exploration is to asses how well each predictor in the data set separates the two CHD classes (CHD = Yes/No) letting determine whether a given variable appears to have discriminative power for CHD status.
+
+For continuous predictors *boxplots* are used which provide a quick visual understanding of whether the distributions differ across CHD classes.
+
+```{r, fig.width=9, fig.height=6, fig.cap="Plots for assessing numerical variables discriminative power for CHD", fig.align="center",echo=FALSE}
+theme_set(theme_minimal())
+
+p1<-ggplot(df_chd, aes(x = CHD, y = age, fill = CHD)) +
+  geom_boxplot() +
+  labs(title = "Age Distributions by CHD Status", x = "CHD", y = "Age")
+p2<-ggplot(df_chd, aes(x = CHD, y = cpd, fill = CHD)) +
+  geom_boxplot() +
+  labs(title = "cpd Distributions by CHD Status", x = "CHD", y = "cpd")
+p3<-ggplot(df_chd, aes(x = CHD, y = chol, fill = CHD)) +
+  geom_boxplot() +
+  labs(title = "chol Distributions by CHD Status", x = "CHD", y = "chol")
+p4<-ggplot(df_chd, aes(x = CHD, y = DBP, fill = CHD)) +
+  geom_boxplot() +
+  labs(title = "DBP Distributions by CHD Status", x = "CHD", y = "DBP")
+p5<-ggplot(df_chd, aes(x = CHD, y = BMI, fill = CHD)) +
+  geom_boxplot() +
+  labs(title = "BMI Distributions by CHD Status", x = "CHD", y = "BMI")
+p6<-ggplot(df_chd, aes(x = CHD, y = HR, fill = CHD)) +
+  geom_boxplot() +
+  labs(title = "HR Distributions by CHD Status", x = "CHD", y = "HR")
+
+(p1|p2|p3)/
+(p4|p5|p6)
+```
+
+Those boxplots highlight, by their distributions, how variables like *age* can have a high discriminative power over CHD.
+
+For categorical predictors, it is insightful to compare the CHD proportions across categories through *bar plots* showing how frequently CHD appears in each level of the factor.
+
+```{r,fig.width=9, fig.height=6, fig.cap="Plots for assessing categorical variables discriminative power for CHD", fig.align="center",echo=FALSE}
+
+p7<-ggplot(df_chd, aes(x = sex, fill = CHD)) + 
+  geom_bar(position = "fill") +
+  labs(title = "CHD Proportion by Sex", x = "Sex", y = "Proportion of CHD")
+
+p8<-ggplot(df_chd, aes(x = education, fill = CHD)) + 
+  geom_bar(position = "fill") +
+  labs(title = "CHD Proportion by Education", x = "Education", y = "Proportion of CHD")
+p9<-ggplot(df_chd, aes(x = smoker, fill = CHD)) + 
+  geom_bar(position = "fill") +
+  labs(title = "CHD Proportion by Smoker", x = "Smoker", y = "Proportion of CHD")
+p10<-ggplot(df_chd, aes(x = stroke, fill = CHD)) + 
+  geom_bar(position = "fill") +
+  labs(title = "CHD Proportion by Stroke", x = "Stroke", y = "Proportion of CHD")
+p11<-ggplot(df_chd, aes(x = HTN, fill = CHD)) + 
+  geom_bar(position = "fill") +
+  labs(title = "CHD Proportion by HTN", x = "HTN", y = "Proportion of CHD")
+p12<-ggplot(df_chd, aes(x = diabetes, fill = CHD)) + 
+  geom_bar(position = "fill") +
+  labs(title = "CHD Proportion by Diabetes", x = "Diabetes", y = "Proportion of CHD")
+
+(p7|p8|p9) /
+(p10|p11|p12)
+```
+
+It is possible to notice how variables like *diabetes*, *stroke* and *HTN* can have a high discriminative power over CHD.
+
+## Splitting data
+
+A stratified split was used to partition the data set into training (70%) and test (30%) subsets while preserving the proportion of CHD and non-CHD cases, that have the following imbalanced distribution:
+
+```{r,echo=FALSE}
+table(df_chd$CHD)%>%
+  kable(col.names = c("CHD","Freq"))
+```
+
+The partition then returns a train (70%) and test set (20%) with the class distributed as 85% for "No" and 15% for "Yes".
+
+```{r}
+set.seed(123)
+index <- caret::createDataPartition(df_chd$CHD, p = 0.70, list = FALSE)
+train_data <- df_chd[index, ]
+test_data  <- df_chd[-index, ]
+```
+
+## Fitting the Logistic Regression model
+
+We now want to predict the *CHD* target variable using a multivariate Logistic Regression model. We fit a logistic regression of the form:\begin{equation*}
+\mbox{logit}(\mbox{E(CHD)}) = \beta_0 + \beta_1 \mbox{sex} + \beta_2 \mbox{age} + \beta_3 \mbox{education} + \ldots + \beta_{12} \mbox{HR}
+\end{equation*} as follows:
+
+```{r}
+glm_fit <- glm(
+  CHD ~ .,
+  data = train_data,
+  family = binomial(link = "logit")
+  )
+```
+
+```{r,echo=FALSE}
+tidy(glm_fit)%>%
+  kable(format = "latex")%>%
+  kable_styling(font_size=8)
+```
+
+By looking at the table it possible to notice that several predictors have p-values well below 0.05, indicating that they significantly affect the odds of CHD in the presence of the other variables, especially age, cpd and HTN1. Those values suggest respectively that: as *age* increases, the log-odds of CHD rise, suggesting *strong age dependence*; the more *cigarettes smoked per day* (cpd), the higher the log-odds of CHD; Hypertension (HTN1) is a strong and statistically significant contributor to CHD risk.
+
+Some variables (e.g., education levels, smoker1, chol, BMI, HR) do not reach statistical significance in this model. This lack of significance does not necessarily mean they have no effect, but rather that any effect is not detected given the current data and model specification.
+
+### Evaluation of the model
+
+The values of the variable CHD are predicted by applying the fitted Logistic model and setting the threshold to *0.3*. This value for threshold has been decided by taking into account the imbalance between "Yes" (15%) and "No"(85%) values in the target variable CHD. In an imbalanced scenario a threshold of 0.5 tends to predict mostly “No” and misses many of the minority-class positives. By reducing the threshold, the model is allowed to flag more “Yes” cases:
+
+```{r}
+glm_prob <- predict(glm_fit, newdata = test_data, type = "response")
+glm_pred <- ifelse(glm_prob > 0.3, "Yes", "No")
+```
+
+It is now possible to evaluate the model. For generating the confusion matrix and estimating the necessary metrics we use **confusionMatrix()** that calculates a cross-tabulation of observed and predicted classes with associated statistics.
+
+```{r}
+cm_glm <- confusionMatrix(factor(glm_pred, levels=c("No","Yes")),
+                          test_data$CHD)
+```
+
+The following confusion matrix is returned:
+
+```{r,echo=FALSE}
+cm_glm$table
+```
+
+This table is the perfect tool for computing some metrics extracted as follows:
+
+```{r}
+accuracy_glm<- cm_glm$overall["Accuracy"]
+sensitivity_glm<- cm_glm$byClass["Sensitivity"]
+specificity_glm<- cm_glm$byClass["Specificity"]
+```
+
+```{r,echo=FALSE}
+metrics_df <- data.frame(
+  Accuracy    = cm_glm$overall["Accuracy"],
+  Sensitivity = cm_glm$byClass["Sensitivity"],
+  Specificity = cm_glm$byClass["Specificity"]
+)
+kable(metrics_df, digits = 3, row.names = FALSE)
+```
+
+It has been noticed that lowering the logistic threshold to 0.3 yields an *accuracy* of *0.814*. Sensitivity or True Positive Rate is high (0.9230); specificity is just 0.2073, implying the model still misses many “Yes” cases. In this case FPR (1-specificity) is high (0.7927).
+
+### ROC curve
+
+From the computations that has been made it is possible to obtain the ROC curve for evaluating the overall model. For doing that it is more practical to use the **roc** function as follows:
+
+```{r}
+glm_roc <- roc(response = test_data$CHD,
+               predictor = glm_prob,
+               levels = c("No", "Yes"),
+               direction = "<")
+```
+
+```{r,fig.width=3.5, fig.height=3.5, fig.cap="ROC Curve - Logistic Regression (Threshold=0.3)", fig.align="center",echo=FALSE}
+plot(glm_roc)
+```
+
+From a graphical standpoint it is possible to notice that the performance of our model is moderate. Moreover, to assess this it is also possible to compute the *AUC* which is:
+
+```{r,echo=FALSE}
+tidy(auc(glm_roc))%>%
+  kable(col.names = "Area Under the Curve")
+```
+
+This value states that the model is correctly ranking positive vs. negative cases about 70% of the time. This suggests that the model has some real predictive value but could likely be improved.
+
+## Fitting the K-Nearest Neighbors model
+
+For KNN, the scale of a variable is very important, as KNN is based on distances to identify observations near to each other. So, variables on a large scale will impact the distance way more than variables on a smaller scale. Only the numeric variables are *scaled* and then the KNN model is trained with the new scaled data.
+
+```{r}
+numeric_vars <- c("age","cpd","chol","DBP","BMI","HR")
+pre_proc <- preProcess(
+  train_data[, numeric_vars], 
+  method = c("center","scale")
+  )
+
+train_scaled <- train_data
+test_scaled  <- test_data
+
+train_scaled[, numeric_vars] <- predict(pre_proc, 
+                                        train_data[, numeric_vars])
+test_scaled[, numeric_vars]  <- predict(pre_proc, 
+                                        test_data[, numeric_vars])
+```
+
+For tuning the k parameter, given a data set of 4238 observation, it has been chosen to try with a wide range (from 1 to 100) to make sure to avoid underfit or overfit of the model. Moreover, stepping by 2 (e.g., seq(1, 100, by = 2)) is common for binary classification so that ties are less likely. As regards the cross-validation a 10-fold repeated CV is optimal for balancing bias and variance (repeating 3 times further stabilizes performance estimates).
+
+```{r}
+ctrl <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+
+tune_grid <- expand.grid(k = seq(1, 100,by=2))
+
+knn_fit <- train(
+  CHD ~ ., 
+  data = train_scaled, 
+  method = "knn", 
+  trControl = ctrl,
+  tuneGrid = tune_grid
+  )
+```
+
+Many trials with different ranges has been made and in most cases the optimal k has resulted as the following:
+
+```{r,echo=FALSE}
+tidy(knn_fit$bestTune$k)%>%
+  kable(col.names = "optimal k")
+```
+
+This value of k is the one that minimizes the value of the error rate. In fact, caret internally performs cross-validation over various k values and picks the best based on a chosen metric.
+
+### Evaluation of the model
+
+For evaluating the performance of this model and getting the confusion matrix it is exploited the same method used for the Logistic Regression.
+
+```{r}
+knn_pred <- predict(knn_fit, newdata = test_scaled)
+
+cm_knn <- confusionMatrix(knn_pred, test_scaled$CHD)
+```
+
+The following confusion matrix is returned:
+
+```{r,echo=FALSE}
+cm_knn$table
+```
+
+By looking at the table it is already clear that the model KNN does not detect any of the minority “Yes” instances under these settings. Moreover, the metrics confirm this:
+
+```{r,echo=FALSE}
+metrics_df <- data.frame(
+  Accuracy    = cm_knn$overall["Accuracy"],
+  Sensitivity = cm_knn$byClass["Sensitivity"],
+  Specificity = cm_knn$byClass["Specificity"]
+)
+kable(metrics_df, digits = 3, row.names = FALSE)
+```
+
+The K-NN model overall *accuracy* is *0.8474*. Sensitivity (0.9991) is extremely high; specificity (i.e., correctly identifying “Yes”) is *0.0000*, meaning the model never correctly classifies a “Yes” case.
+
+## Conclusions and final considerations
+
+Based on the results, Logistic Regression (LR) appears to be more suitable than K-Nearest Neighbors (KNN) for predicting Coronary Heart Disease (CHD) in this context. While KNN achieved slightly higher overall accuracy, it completely failed to identify any positive CHD cases (specificity = 0), making it ineffective for detecting the minority class. LR, on the other hand, demonstrated better balance, with a reasonable trade-off between sensitivity (0.923) and specificity (0.207), and an AUC of \~0.73 indicating moderate predictive power. Key predictors identified included age, hypertension, and cigarettes per day. However, the study's limitations include class imbalance, potential overfitting in KNN, and lack of external validation. More robust models or re-sampling techniques could improve performance in future work.
